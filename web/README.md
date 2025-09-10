@@ -1,69 +1,90 @@
-# React + TypeScript + Vite
+# GitHub Activity Tracker Web Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A modern web dashboard for tracking GitHub activities, built with Vite, React, TypeScript, and Tailwind CSS. Deployable on Vercel with Doppler integration for secrets management.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- 📊 Real-time GitHub activity dashboard
+- 📈 Activity statistics (PRs, Issues, Commits)
+- 🎨 Beautiful Tailwind CSS design with dark mode
+- 🔐 Secure token handling via Doppler
+- ⚡ Fast Vite build system
+- 🚀 Vercel deployment ready
 
-## Expanding the ESLint configuration
+## Local Development
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd web
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Visit http://localhost:5173
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Deployment on Vercel
 
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 1. Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel
 ```
+
+### 2. Configure Environment Variables
+
+In Vercel Dashboard, add:
+- `GITHUB_TOKEN` - Your GitHub personal access token
+- `GITHUB_USERNAME` - Your GitHub username (optional)
+
+### 3. Connect with Doppler (Recommended)
+
+1. Install Doppler Vercel Integration:
+   - Go to Vercel Dashboard → Integrations
+   - Search for "Doppler"
+   - Install and connect your Doppler project
+
+2. Configure Doppler:
+```bash
+doppler setup --project github-activity-tracker --config prd
+doppler secrets set GITHUB_TOKEN "your-token"
+doppler secrets set GITHUB_USERNAME "your-username"
+```
+
+The integration will automatically sync secrets to Vercel.
+
+## Usage
+
+### With Token Input
+If no environment variable is set, users can enter their GitHub token in the UI.
+
+### With Environment Variables
+Set `VITE_GITHUB_TOKEN` for automatic authentication:
+- Local: Add to `.env.local`
+- Vercel: Add to environment variables
+
+## API Route
+
+The app includes a serverless API route at `/api/github-activities` that:
+- Fetches GitHub activities
+- Handles authentication
+- Returns formatted data
+
+## Tech Stack
+
+- **Frontend**: React 18 + TypeScript
+- **Styling**: Tailwind CSS
+- **Build**: Vite
+- **Deployment**: Vercel
+- **Secrets**: Doppler
+- **API**: GitHub REST API via Octokit
+
+## Security
+
+- Tokens are never stored in localStorage
+- API routes handle tokens securely
+- Doppler manages production secrets
+- Environment variables for sensitive data
+
+## License
+
+MIT
