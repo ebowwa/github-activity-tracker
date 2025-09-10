@@ -1,0 +1,37 @@
+{
+  "name": "github-activity-tracker",
+  "version": "1.0.0",
+  "description": "Track all your GitHub activities across repos, PRs, issues, and comments",
+  "main": "dist/index.js",
+  "bin": {
+    "gh-tracker": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "lint": "eslint src/**/*.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["github", "activity", "tracker", "cli"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@octokit/rest": "^20.1.1",
+    "@octokit/graphql": "^8.1.1",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "date-fns": "^3.6.0",
+    "dotenv": "^16.4.5",
+    "ora": "^8.1.0",
+    "table": "^6.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.4",
+    "@typescript-eslint/eslint-plugin": "^8.4.0",
+    "@typescript-eslint/parser": "^8.4.0",
+    "eslint": "^9.9.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}

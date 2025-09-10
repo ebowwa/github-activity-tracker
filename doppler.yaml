@@ -1,0 +1,17 @@
+setup:
+  project: github-activity-tracker
+  config: dev
+
+environments:
+  - name: dev
+    setup:
+      project: github-activity-tracker
+      config: dev
+  - name: staging
+    setup:
+      project: github-activity-tracker
+      config: staging
+  - name: production
+    setup:
+      project: github-activity-tracker
+      config: production
