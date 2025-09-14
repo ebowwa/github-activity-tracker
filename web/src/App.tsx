@@ -76,10 +76,49 @@ function App() {
         setUsername(currentUsername);
 
         // Use authenticated endpoints to get all events (including private repos)
-        const [userEvents, receivedEvents] = await Promise.all([
+        const [userEvents, receivedEvents, userRepos] = await Promise.all([
           octokit.activity.listEventsForAuthenticatedUser({ username: currentUsername, per_page: 100 }),
-          octokit.activity.listReceivedEventsForUser({ username: currentUsername, per_page: 100 })
+          octokit.activity.listReceivedEventsForUser({ username: currentUsername, per_page: 100 }),
+          octokit.repos.listForAuthenticatedUser({ sort: 'pushed', per_page: 10 })
         ]);
+        
+        // Fetch recent commits from recently pushed repos to catch any events not yet in the feed
+        const recentCommitPromises = userRepos.data.slice(0, 5).map(repo => 
+          octokit.repos.listCommits({ 
+            owner: repo.owner.login, 
+            repo: repo.name, 
+            author: currentUsername,
+            per_page: 5 
+          }).catch(() => ({ data: [] }))
+        );
+        const recentCommitsResponses = await Promise.all(recentCommitPromises);
+        
+        // Convert recent commits to pseudo-events for display
+        const commitEvents: Activity[] = [];
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        
+        recentCommitsResponses.forEach((response, index) => {
+          const repo = userRepos.data[index];
+          response.data.forEach(commit => {
+            const commitDate = new Date(commit.commit.author?.date || '');
+            if (commitDate > oneDayAgo) {
+              // Create a pseudo PushEvent for recent commits
+              commitEvents.push({
+                id: `commit-${commit.sha}`,
+                type: 'PushEvent',
+                created_at: commit.commit.author?.date || '',
+                repo: { name: repo.full_name },
+                actor: { login: currentUsername },
+                payload: {
+                  commits: [{
+                    sha: commit.sha,
+                    message: commit.commit.message
+                  }]
+                }
+              });
+            }
+          });
+        });
 
         // Filter received events to only include those that involve the current user
         const filteredReceivedEvents = receivedEvents.data.filter(event => {
@@ -113,7 +152,7 @@ function App() {
           return false;
         });
 
-        const allEvents = [...userEvents.data, ...filteredReceivedEvents];
+        const allEvents = [...userEvents.data, ...filteredReceivedEvents, ...commitEvents];
         const uniqueEvents = Array.from(
           new Map(allEvents.map(e => [e.id, e])).values()
         ).sort((a, b) => 
