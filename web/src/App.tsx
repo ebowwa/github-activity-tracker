@@ -62,14 +62,47 @@ function App() {
         // Local development - direct API calls
         const octokit = new Octokit({ auth: tokenToUse });
         const { data: user } = await octokit.users.getAuthenticated();
-        setUsername(user.login);
+        const currentUsername = user.login;
+        setUsername(currentUsername);
 
         const [userEvents, receivedEvents] = await Promise.all([
-          octokit.activity.listPublicEventsForUser({ username: user.login, per_page: 100 }),
-          octokit.activity.listReceivedEventsForUser({ username: user.login, per_page: 100 })
+          octokit.activity.listPublicEventsForUser({ username: currentUsername, per_page: 100 }),
+          octokit.activity.listReceivedEventsForUser({ username: currentUsername, per_page: 100 })
         ]);
 
-        const allEvents = [...userEvents.data, ...receivedEvents.data];
+        // Filter received events to only include those that involve the current user
+        const filteredReceivedEvents = receivedEvents.data.filter(event => {
+          // Keep events where the current user is the actor
+          if (event.actor.login === currentUsername) return true;
+          
+          // Keep events on repos owned by the current user
+          if (event.repo.name.startsWith(currentUsername + '/')) return true;
+          
+          // Keep issue/PR comment events where the user might be mentioned
+          if (event.type === 'IssueCommentEvent' || event.type === 'PullRequestReviewCommentEvent') {
+            const body = event.payload.comment?.body || '';
+            return body.includes('@' + currentUsername);
+          }
+          
+          // Keep PR events where the user is the PR author
+          if (event.type === 'PullRequestEvent' && event.payload.pull_request) {
+            return event.payload.pull_request.user.login === currentUsername;
+          }
+          
+          // Keep issue events where the user is the issue author
+          if (event.type === 'IssuesEvent' && event.payload.issue) {
+            return event.payload.issue.user.login === currentUsername;
+          }
+          
+          // Filter out other people's Fork, Watch, Star events
+          if (event.type === 'ForkEvent' || event.type === 'WatchEvent') {
+            return false;
+          }
+          
+          return false;
+        });
+
+        const allEvents = [...userEvents.data, ...filteredReceivedEvents];
         const uniqueEvents = Array.from(
           new Map(allEvents.map(e => [e.id, e])).values()
         ).sort((a, b) => 
@@ -100,10 +133,10 @@ function App() {
     const repoCount: Record<string, number> = {};
 
     acts.forEach(activity => {
-      // Count by repo
+      // Count repo activity
       repoCount[activity.repo.name] = (repoCount[activity.repo.name] || 0) + 1;
 
-      // Count by type
+      // Count activity types
       switch (activity.type) {
         case 'PullRequestEvent':
           if (activity.payload.action === 'opened') stats.pullRequests.opened++;
@@ -128,6 +161,7 @@ function App() {
       }
     });
 
+    // Get top 5 repos
     stats.topRepos = Object.entries(repoCount)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5)
@@ -136,145 +170,156 @@ function App() {
     setStats(stats);
   };
 
+  const getActivityIcon = (type: string) => {
+    switch (type) {
+      case 'PushEvent': return '🚀';
+      case 'PullRequestEvent': return '🔀';
+      case 'IssuesEvent': return '📝';
+      case 'IssueCommentEvent': return '💬';
+      case 'WatchEvent': return '⭐';
+      case 'ForkEvent': return '🍴';
+      case 'CreateEvent': return '✨';
+      case 'DeleteEvent': return '🗑️';
+      case 'ReleaseEvent': return '🎉';
+      case 'PullRequestReviewEvent': return '👀';
+      case 'PullRequestReviewCommentEvent': return '💭';
+      default: return '📌';
+    }
+  };
+
   const getActivityDescription = (activity: Activity) => {
+    const actor = activity.actor.login;
+    const repo = activity.repo.name;
+    
     switch (activity.type) {
       case 'PushEvent':
-        return `Pushed ${activity.payload.commits?.length || 0} commit(s) to ${activity.payload.ref?.replace('refs/heads/', '')}`;
+        const commitCount = activity.payload.commits?.length || 0;
+        return `${actor} pushed ${commitCount} commit${commitCount !== 1 ? 's' : ''} to ${repo}`;
       case 'PullRequestEvent':
-        return `${activity.payload.action} PR #${activity.payload.pull_request?.number}: ${activity.payload.pull_request?.title}`;
+        return `${actor} ${activity.payload.action} a pull request in ${repo}`;
       case 'IssuesEvent':
-        return `${activity.payload.action} issue #${activity.payload.issue?.number}: ${activity.payload.issue?.title}`;
+        return `${actor} ${activity.payload.action} an issue in ${repo}`;
       case 'IssueCommentEvent':
-        return `Commented on issue #${activity.payload.issue?.number}`;
-      case 'CreateEvent':
-        return `Created ${activity.payload.ref_type} ${activity.payload.ref || ''}`;
+        return `${actor} commented on an issue in ${repo}`;
       case 'WatchEvent':
-        return 'Starred repository';
+        return `${actor} starred ${repo}`;
       case 'ForkEvent':
-        return 'Forked repository';
+        return `${actor} forked ${repo}`;
+      case 'CreateEvent':
+        return `${actor} created ${activity.payload.ref_type} in ${repo}`;
+      case 'DeleteEvent':
+        return `${actor} deleted ${activity.payload.ref_type} in ${repo}`;
+      case 'ReleaseEvent':
+        return `${actor} ${activity.payload.action} a release in ${repo}`;
+      case 'PullRequestReviewEvent':
+        return `${actor} reviewed a pull request in ${repo}`;
+      case 'PullRequestReviewCommentEvent':
+        return `${actor} commented on a pull request review in ${repo}`;
       default:
-        return activity.type.replace('Event', '');
+        return `${actor} performed ${activity.type.replace('Event', '')} on ${repo}`;
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <div className="container mx-auto px-4 py-8">
-        <h1 className="text-4xl font-bold text-center mb-8 text-gray-800 dark:text-white">
-          GitHub Activity Tracker
-        </h1>
-
+    <div className="min-h-screen bg-gray-100 py-8">
+      <div className="container mx-auto px-4">
+        <h1 className="text-3xl font-bold text-gray-800 mb-8">GitHub Activity Tracker</h1>
+        
         {!import.meta.env.VITE_GITHUB_TOKEN && (
-          <div className="max-w-md mx-auto bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 mb-8">
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                GitHub Token
-              </label>
+          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+            <div className="flex gap-4">
               <input
                 type="password"
+                placeholder="Enter GitHub Token"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
+              <button
+                onClick={() => fetchActivities()}
+                disabled={loading}
+                className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-400"
+              >
+                {loading ? 'Loading...' : 'Fetch Activities'}
+              </button>
             </div>
-            <button
-              onClick={() => fetchActivities()}
-              disabled={loading}
-              className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 disabled:bg-gray-400"
-            >
-              {loading ? 'Loading...' : 'Fetch Activities'}
-            </button>
           </div>
         )}
 
         {error && (
-          <div className="max-w-md mx-auto mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-8">
             {error}
           </div>
         )}
 
         {username && (
-          <div className="text-center mb-4">
-            <span className="text-lg font-semibold text-gray-700 dark:text-gray-300">
-              Activities for: <span className="text-blue-500">{username}</span>
-            </span>
+          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h2 className="text-xl font-semibold text-gray-700 mb-2">
+              Activities for: <span className="text-blue-600">@{username}</span>
+            </h2>
+            <p className="text-gray-500">Showing your personal GitHub activities (excluding other people's stars/forks)</p>
           </div>
         )}
 
         {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
-              <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Pull Requests</h3>
-              <div className="space-y-1 text-sm">
-                <div>Opened: <span className="font-bold text-green-500">{stats.pullRequests.opened}</span></div>
-                <div>Merged: <span className="font-bold text-blue-500">{stats.pullRequests.merged}</span></div>
-                <div>Closed: <span className="font-bold text-red-500">{stats.pullRequests.closed}</span></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h3 className="text-lg font-semibold text-gray-700 mb-2">Total Activities</h3>
+              <p className="text-3xl font-bold text-blue-600">{stats.totalActivities}</p>
+            </div>
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h3 className="text-lg font-semibold text-gray-700 mb-2">Pull Requests</h3>
+              <div className="space-y-1">
+                <p className="text-sm">Opened: <span className="font-bold">{stats.pullRequests.opened}</span></p>
+                <p className="text-sm">Merged: <span className="font-bold text-green-600">{stats.pullRequests.merged}</span></p>
+                <p className="text-sm">Closed: <span className="font-bold">{stats.pullRequests.closed}</span></p>
               </div>
             </div>
-
-            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
-              <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Issues</h3>
-              <div className="space-y-1 text-sm">
-                <div>Opened: <span className="font-bold text-green-500">{stats.issues.opened}</span></div>
-                <div>Closed: <span className="font-bold text-red-500">{stats.issues.closed}</span></div>
-                <div>Comments: <span className="font-bold text-blue-500">{stats.issues.commented}</span></div>
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h3 className="text-lg font-semibold text-gray-700 mb-2">Issues</h3>
+              <div className="space-y-1">
+                <p className="text-sm">Opened: <span className="font-bold">{stats.issues.opened}</span></p>
+                <p className="text-sm">Closed: <span className="font-bold">{stats.issues.closed}</span></p>
+                <p className="text-sm">Comments: <span className="font-bold">{stats.issues.commented}</span></p>
               </div>
             </div>
-
-            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
-              <h3 className="font-semibold text-gray-700 dark:text-gray-300 mb-2">Activity Summary</h3>
-              <div className="space-y-1 text-sm">
-                <div>Total: <span className="font-bold text-purple-500">{stats.totalActivities}</span></div>
-                <div>Commits: <span className="font-bold text-green-500">{stats.commits}</span></div>
-                <div>Top Repo: <span className="font-bold text-blue-500">{stats.topRepos[0]?.name.split('/')[1] || 'N/A'}</span></div>
-              </div>
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h3 className="text-lg font-semibold text-gray-700 mb-2">Commits</h3>
+              <p className="text-3xl font-bold text-purple-600">{stats.commits}</p>
             </div>
           </div>
         )}
 
-        {activities.length > 0 && (
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden">
-            <table className="min-w-full">
-              <thead className="bg-gray-100 dark:bg-gray-700">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Time
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Repository
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                    Description
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                {activities.slice(0, 50).map((activity) => (
-                  <tr key={activity.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">
-                      {format(new Date(activity.created_at), 'MMM dd HH:mm')}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                        {activity.type.replace('Event', '')}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">
-                      {activity.repo.name}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-900 dark:text-gray-300">
-                      {getActivityDescription(activity)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {stats && stats.topRepos.length > 0 && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+            <h3 className="text-lg font-semibold text-gray-700 mb-4">Top Repositories</h3>
+            <div className="space-y-2">
+              {stats.topRepos.map((repo) => (
+                <div key={repo.name} className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-gray-600">{repo.name}</span>
+                  <span className="text-sm font-bold text-blue-600">{repo.count} activities</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
+
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h3 className="text-lg font-semibold text-gray-700 mb-4">Recent Activities</h3>
+          <div className="space-y-4 max-h-96 overflow-y-auto">
+            {activities.map((activity) => (
+              <div key={activity.id} className="flex items-start space-x-3 p-3 hover:bg-gray-50 rounded">
+                <span className="text-2xl">{getActivityIcon(activity.type)}</span>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700">{getActivityDescription(activity)}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {format(new Date(activity.created_at), 'MMM dd, HH:mm')}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
