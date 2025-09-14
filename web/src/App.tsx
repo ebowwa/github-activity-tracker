@@ -66,6 +66,8 @@ function App() {
         if (!response.ok) throw new Error(data.error);
         setActivities(data.activities);
         setUsername(data.username);
+        calculateStats(data.activities);
+        setLastUpdated(new Date());
       } else {
         // Local development - direct API calls
         const octokit = new Octokit({ auth: tokenToUse });
@@ -122,10 +124,6 @@ function App() {
         setActivities(finalActivities);
         // Calculate stats on the newly fetched activities
         calculateStats(finalActivities);
-        setLastUpdated(new Date());
-      } else {
-        // For production/API route, calculate stats after setting activities
-        calculateStats(activities);
         setLastUpdated(new Date());
       }
     } catch (err: any) {
