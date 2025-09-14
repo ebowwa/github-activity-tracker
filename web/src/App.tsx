@@ -26,6 +26,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [username, setUsername] = useState('');
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   useEffect(() => {
     // Check if running on Vercel with environment variables
@@ -33,6 +34,13 @@ function App() {
     if (envToken) {
       setToken(envToken);
       fetchActivities(envToken);
+      
+      // Auto-refresh every 60 seconds
+      const interval = setInterval(() => {
+        fetchActivities(envToken);
+      }, 60000);
+      
+      return () => clearInterval(interval);
     }
   }, []);
 
@@ -65,8 +73,9 @@ function App() {
         const currentUsername = user.login;
         setUsername(currentUsername);
 
+        // Use authenticated endpoints to get all events (including private repos)
         const [userEvents, receivedEvents] = await Promise.all([
-          octokit.activity.listPublicEventsForUser({ username: currentUsername, per_page: 100 }),
+          octokit.activity.listEventsForAuthenticatedUser({ username: currentUsername, per_page: 100 }),
           octokit.activity.listReceivedEventsForUser({ username: currentUsername, per_page: 100 })
         ]);
 
@@ -109,11 +118,16 @@ function App() {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
 
-        setActivities(uniqueEvents.slice(0, 100));
+        const finalActivities = uniqueEvents.slice(0, 100);
+        setActivities(finalActivities);
+        // Calculate stats on the newly fetched activities
+        calculateStats(finalActivities);
+        setLastUpdated(new Date());
+      } else {
+        // For production/API route, calculate stats after setting activities
+        calculateStats(activities);
+        setLastUpdated(new Date());
       }
-
-      // Calculate stats
-      calculateStats(activities);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch activities');
     } finally {
@@ -254,10 +268,28 @@ function App() {
 
         {username && (
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-            <h2 className="text-xl font-semibold text-gray-700 mb-2">
-              Activities for: <span className="text-blue-600">@{username}</span>
-            </h2>
-            <p className="text-gray-500">Showing your personal GitHub activities (excluding other people's stars/forks)</p>
+            <div className="flex justify-between items-start">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-700 mb-2">
+                  Activities for: <span className="text-blue-600">@{username}</span>
+                </h2>
+                <p className="text-gray-500">Showing your personal GitHub activities (including private repos)</p>
+              </div>
+              <div className="text-right">
+                <button
+                  onClick={() => fetchActivities(token || import.meta.env.VITE_GITHUB_TOKEN)}
+                  disabled={loading}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-400 mb-2"
+                >
+                  {loading ? 'Refreshing...' : '🔄 Refresh'}
+                </button>
+                {lastUpdated && (
+                  <p className="text-sm text-gray-500">
+                    Last updated: {format(lastUpdated, 'HH:mm:ss')}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
