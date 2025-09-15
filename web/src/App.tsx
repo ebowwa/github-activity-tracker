@@ -1,226 +1,106 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Octokit } from '@octokit/rest';
-import { format, subDays, startOfDay, endOfDay, isWithinInterval } from 'date-fns';
+import { useState, useEffect } from 'react';
+import {
+  useGitHubData,
+  GitHubStatsCard,
+  ActivityFeed,
+  RateLimitBadge,
+  type FilterOptions
+} from './lib';
+import { format } from 'date-fns';
 
-interface Activity {
-  id: string;
-  type: string;
-  created_at: string;
-  repo: { name: string };
-  payload: any;
-  actor: { login: string };
-}
-
-interface RateLimitInfo {
-  remaining: number;
-  reset: Date;
-  limit: number;
-}
-
-interface Stats {
-  totalActivities: number;
-  pullRequests: number;
-  issues: number;
-  commits: number;
-  reviews: number;
-  topRepos: { name: string; count: number }[];
-  activityByDay: { date: string; count: number }[];
-}
-
+/**
+ * Main App using the composable GitHub Activity Tracker library
+ */
 function App() {
   const [token, setToken] = useState('');
-  const [activities, setActivities] = useState<Activity[]>([]);
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [username, setUsername] = useState('');
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null);
+  const [inputToken, setInputToken] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
-  const [refreshInterval, setRefreshInterval] = useState(300000); // 5 minutes default
+  const [refreshInterval, setRefreshInterval] = useState(300000);
 
-  // Load token from localStorage on mount
+  const {
+    activities,
+    stats,
+    rateLimit,
+    lastUpdated,
+    loading,
+    error,
+    fetchActivities,
+    setFilters,
+  } = useGitHubData({
+    config: {
+      token,
+      autoRefresh,
+      refreshInterval,
+      maxPages: 3,
+      cacheEnabled: true,
+      cacheDuration: 300000,
+    },
+    onError: (err) => {
+      console.error('GitHub API Error:', err);
+    },
+    onRateLimitWarning: (info) => {
+      console.warn('Rate limit warning:', info);
+    },
+  });
+
+  // Load saved token on mount
   useEffect(() => {
     const savedToken = localStorage.getItem('github-tracker-token');
     if (savedToken) {
       setToken(savedToken);
+      setInputToken(savedToken);
     }
   }, []);
 
-  // Calculate stats from activities
-  const calculateStats = useCallback((activityList: Activity[]): Stats => {
-    const repoCount = new Map<string, number>();
-    const dayCount = new Map<string, number>();
-
-    let pullRequests = 0;
-    let issues = 0;
-    let commits = 0;
-    let reviews = 0;
-
-    activityList.forEach(activity => {
-      // Count by repo
-      const repoName = activity.repo.name;
-      repoCount.set(repoName, (repoCount.get(repoName) || 0) + 1);
-
-      // Count by day
-      const day = format(new Date(activity.created_at), 'yyyy-MM-dd');
-      dayCount.set(day, (dayCount.get(day) || 0) + 1);
-
-      // Count by type
-      switch (activity.type) {
-        case 'PullRequestEvent':
-          pullRequests++;
-          break;
-        case 'IssuesEvent':
-          issues++;
-          break;
-        case 'PushEvent':
-          commits += activity.payload?.commits?.length || 0;
-          break;
-        case 'PullRequestReviewEvent':
-          reviews++;
-          break;
-      }
-    });
-
-    // Get top repos
-    const topRepos = Array.from(repoCount.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([name, count]) => ({ name, count }));
-
-    // Get activity by day
-    const activityByDay = Array.from(dayCount.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-7)
-      .map(([date, count]) => ({ date, count }));
-
-    return {
-      totalActivities: activityList.length,
-      pullRequests,
-      issues,
-      commits,
-      reviews,
-      topRepos,
-      activityByDay
-    };
-  }, []);
-
-  // Fetch activities with rate limit handling
-  const fetchActivities = useCallback(async (tokenToUse: string) => {
-    if (!tokenToUse) {
-      setError('Please enter a GitHub token');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-
-    try {
-      const octokit = new Octokit({ auth: tokenToUse });
-
-      // Get authenticated user
-      const { data: user } = await octokit.users.getAuthenticated();
-      setUsername(user.login);
-
-      // Check rate limit first
-      const { data: rateLimitData } = await octokit.rateLimit.get();
-      const core = rateLimitData.rate;
-
-      setRateLimit({
-        remaining: core.remaining,
-        reset: new Date(core.reset * 1000),
-        limit: core.limit
-      });
-
-      // If rate limit is low, show warning
-      if (core.remaining < 10) {
-        const resetTime = new Date(core.reset * 1000);
-        setError(`Rate limit low. Resets at ${resetTime.toLocaleTimeString()}`);
-        setLoading(false);
-        return;
-      }
-
-      // Fetch events (max 100 per page, up to 3 pages)
-      const allEvents: Activity[] = [];
-      const maxPages = Math.min(3, Math.floor(core.remaining / 3)); // Use available rate limit wisely
-
-      for (let page = 1; page <= maxPages; page++) {
-        const { data: events } = await octokit.activity.listEventsForAuthenticatedUser({
-          username: user.login,
-          per_page: 100,
-          page
-        });
-        allEvents.push(...events as Activity[]);
-      }
-
-      setActivities(allEvents);
-      setStats(calculateStats(allEvents));
-      setLastUpdated(new Date());
-
-      // Save token only (not the data to avoid localStorage issues)
-      localStorage.setItem('github-tracker-token', tokenToUse);
-
-    } catch (err: any) {
-      if (err.status === 401) {
-        setError('Invalid token. Please check your GitHub personal access token.');
-      } else if (err.status === 403) {
-        setError('Rate limit exceeded. Please wait before trying again.');
-      } else {
-        setError(`Error: ${err.message || 'Failed to fetch data'}`);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [calculateStats]);
-
-  // Auto-refresh with safe interval
+  // Fetch data when token is set
   useEffect(() => {
-    if (!autoRefresh || !token || refreshInterval < 60000) return;
-
-    const interval = setInterval(() => {
-      // Only refresh if we have enough rate limit
-      if (rateLimit && rateLimit.remaining > 20) {
-        fetchActivities(token);
-      }
-    }, refreshInterval);
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, token, refreshInterval, rateLimit, fetchActivities]);
-
-  // Manual refresh
-  const handleRefresh = () => {
     if (token) {
-      fetchActivities(token);
+      fetchActivities();
     }
-  };
+  }, [token]);
 
   const handleTokenSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchActivities(token);
+    if (inputToken) {
+      setToken(inputToken);
+      localStorage.setItem('github-tracker-token', inputToken);
+    }
+  };
+
+  const handleDisconnect = () => {
+    setToken('');
+    setInputToken('');
+    localStorage.removeItem('github-tracker-token');
+  };
+
+  const handleFilterChange = (newFilters: FilterOptions) => {
+    setFilters(newFilters);
   };
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 p-8">
       <div className="max-w-7xl mx-auto">
-        <h1 className="text-4xl font-bold mb-8 text-center bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
-          GitHub Activity Tracker
-        </h1>
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-center bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
+            GitHub Activity Tracker
+          </h1>
+        </div>
 
         {/* Token Input */}
-        {!username && (
+        {!token && (
           <form onSubmit={handleTokenSubmit} className="mb-8">
             <div className="flex gap-4 max-w-2xl mx-auto">
               <input
                 type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
+                value={inputToken}
+                onChange={(e) => setInputToken(e.target.value)}
                 placeholder="Enter GitHub Personal Access Token"
                 className="flex-1 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:border-blue-500"
               />
               <button
                 type="submit"
-                disabled={loading || !token}
+                disabled={loading || !inputToken}
                 className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 rounded-lg transition-colors"
               >
                 {loading ? 'Loading...' : 'Connect'}
@@ -236,125 +116,149 @@ function App() {
           </div>
         )}
 
-        {/* User Info & Controls */}
-        {username && (
-          <div className="mb-8 p-4 bg-gray-800 rounded-lg">
-            <div className="flex justify-between items-center">
-              <div>
-                <h2 className="text-xl font-semibold">Connected as: {username}</h2>
-                {lastUpdated && (
-                  <p className="text-sm text-gray-400">
-                    Last updated: {format(lastUpdated, 'MMM dd, yyyy HH:mm:ss')}
-                  </p>
-                )}
-                {rateLimit && (
-                  <p className="text-sm text-gray-400">
-                    API Rate: {rateLimit.remaining}/{rateLimit.limit} (resets {format(rateLimit.reset, 'HH:mm')})
-                  </p>
-                )}
-              </div>
-              <div className="flex gap-4 items-center">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={autoRefresh}
-                    onChange={(e) => setAutoRefresh(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span>Auto-refresh</span>
-                </label>
-                {autoRefresh && (
-                  <select
-                    value={refreshInterval}
-                    onChange={(e) => setRefreshInterval(Number(e.target.value))}
-                    className="px-3 py-1 bg-gray-700 rounded"
+        {/* Connected View */}
+        {token && (
+          <>
+            {/* Controls Bar */}
+            <div className="mb-8 p-4 bg-gray-800 rounded-lg">
+              <div className="flex justify-between items-center flex-wrap gap-4">
+                <div className="flex items-center gap-4">
+                  {lastUpdated && (
+                    <p className="text-sm text-gray-400">
+                      Last updated: {format(lastUpdated, 'MMM dd, yyyy HH:mm:ss')}
+                    </p>
+                  )}
+                  <RateLimitBadge rateLimit={rateLimit} variant="compact" />
+                </div>
+
+                <div className="flex gap-4 items-center">
+                  {/* Auto-refresh toggle */}
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={autoRefresh}
+                      onChange={(e) => setAutoRefresh(e.target.checked)}
+                      className="rounded"
+                    />
+                    <span>Auto-refresh</span>
+                  </label>
+
+                  {/* Refresh interval selector */}
+                  {autoRefresh && (
+                    <select
+                      value={refreshInterval}
+                      onChange={(e) => setRefreshInterval(Number(e.target.value))}
+                      className="px-3 py-1 bg-gray-700 rounded"
+                    >
+                      <option value={300000}>5 min</option>
+                      <option value={600000}>10 min</option>
+                      <option value={1800000}>30 min</option>
+                    </select>
+                  )}
+
+                  {/* Manual refresh */}
+                  <button
+                    onClick={() => fetchActivities()}
+                    disabled={loading}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 rounded-lg transition-colors"
                   >
-                    <option value={300000}>5 min</option>
-                    <option value={600000}>10 min</option>
-                    <option value={1800000}>30 min</option>
-                  </select>
-                )}
-                <button
-                  onClick={handleRefresh}
-                  disabled={loading}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 rounded-lg transition-colors"
-                >
-                  Refresh
-                </button>
-                <button
-                  onClick={() => {
-                    setUsername('');
-                    setActivities([]);
-                    setStats(null);
-                    setToken('');
-                    localStorage.removeItem('github-tracker-token');
-                  }}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
-                >
-                  Disconnect
-                </button>
+                    Refresh
+                  </button>
+
+                  {/* Disconnect */}
+                  <button
+                    onClick={handleDisconnect}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+                  >
+                    Disconnect
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Stats Display */}
-        {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div className="bg-gray-800 p-6 rounded-lg">
-              <h3 className="text-sm text-gray-400 mb-2">Total Activities</h3>
-              <p className="text-3xl font-bold">{stats.totalActivities}</p>
-            </div>
-            <div className="bg-gray-800 p-6 rounded-lg">
-              <h3 className="text-sm text-gray-400 mb-2">Pull Requests</h3>
-              <p className="text-3xl font-bold text-green-400">{stats.pullRequests}</p>
-            </div>
-            <div className="bg-gray-800 p-6 rounded-lg">
-              <h3 className="text-sm text-gray-400 mb-2">Issues</h3>
-              <p className="text-3xl font-bold text-yellow-400">{stats.issues}</p>
-            </div>
-            <div className="bg-gray-800 p-6 rounded-lg">
-              <h3 className="text-sm text-gray-400 mb-2">Commits</h3>
-              <p className="text-3xl font-bold text-blue-400">{stats.commits}</p>
-            </div>
-          </div>
-        )}
+            {/* Filter Controls */}
+            <div className="mb-8 p-4 bg-gray-800 rounded-lg">
+              <h3 className="text-lg font-semibold mb-3">Filters</h3>
+              <div className="flex gap-4 flex-wrap">
+                <select
+                  onChange={(e) => handleFilterChange({ dateRange: e.target.value as any })}
+                  className="px-3 py-2 bg-gray-700 rounded"
+                >
+                  <option value="all">All Time</option>
+                  <option value="today">Today</option>
+                  <option value="7d">Last 7 Days</option>
+                  <option value="30d">Last 30 Days</option>
+                  <option value="90d">Last 90 Days</option>
+                </select>
 
-        {/* Top Repositories */}
-        {stats && stats.topRepos.length > 0 && (
-          <div className="mb-8 bg-gray-800 p-6 rounded-lg">
-            <h3 className="text-xl font-semibold mb-4">Top Repositories</h3>
-            <div className="space-y-2">
-              {stats.topRepos.map((repo) => (
-                <div key={repo.name} className="flex justify-between items-center">
-                  <span className="text-gray-300">{repo.name}</span>
-                  <span className="text-gray-400">{repo.count} activities</span>
-                </div>
-              ))}
+                <input
+                  type="text"
+                  placeholder="Search activities..."
+                  onChange={(e) => handleFilterChange({ searchQuery: e.target.value })}
+                  className="px-3 py-2 bg-gray-700 rounded flex-1 min-w-[200px]"
+                />
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* Recent Activities */}
-        {activities.length > 0 && (
-          <div className="bg-gray-800 p-6 rounded-lg">
-            <h3 className="text-xl font-semibold mb-4">Recent Activities</h3>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {activities.slice(0, 20).map((activity) => (
-                <div key={activity.id} className="p-3 bg-gray-700 rounded hover:bg-gray-600 transition-colors">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <span className="text-sm font-medium text-blue-400">{activity.type.replace('Event', '')}</span>
-                      <span className="text-sm text-gray-400 ml-2">in {activity.repo.name}</span>
+            {/* Rate Limit Full Display */}
+            <div className="mb-8">
+              <RateLimitBadge rateLimit={rateLimit} variant="full" />
+            </div>
+
+            {/* Stats Grid */}
+            {stats && (
+              <div className="mb-8">
+                <GitHubStatsCard stats={stats} variant="dark" />
+              </div>
+            )}
+
+            {/* Top Repositories */}
+            {stats && stats.topRepos.length > 0 && (
+              <div className="mb-8 bg-gray-800 p-6 rounded-lg">
+                <h3 className="text-xl font-semibold mb-4">Top Repositories</h3>
+                <div className="space-y-2">
+                  {stats.topRepos.slice(0, 5).map((repo) => (
+                    <div key={repo.name} className="flex justify-between items-center">
+                      <span className="text-gray-300">{repo.name}</span>
+                      <div className="flex gap-4 text-sm text-gray-400">
+                        {repo.commits && <span>{repo.commits} commits</span>}
+                        {repo.prs && <span>{repo.prs} PRs</span>}
+                        {repo.issues && <span>{repo.issues} issues</span>}
+                        <span className="font-semibold">{repo.count} total</span>
+                      </div>
                     </div>
-                    <span className="text-xs text-gray-500">
-                      {format(new Date(activity.created_at), 'MMM dd, HH:mm')}
-                    </span>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            )}
+
+            {/* Activity Feed */}
+            {activities.length > 0 && (
+              <ActivityFeed
+                activities={activities}
+                maxItems={20}
+                variant="dark"
+                onActivityClick={(activity) => {
+                  console.log('Activity clicked:', activity);
+                }}
+              />
+            )}
+
+            {/* Loading State */}
+            {loading && (
+              <div className="text-center py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                <p className="mt-2 text-gray-400">Loading activities...</p>
+              </div>
+            )}
+
+            {/* Empty State */}
+            {!loading && activities.length === 0 && (
+              <div className="text-center py-8 text-gray-400">
+                No activities found. Try adjusting your filters.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
