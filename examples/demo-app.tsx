@@ -5,7 +5,7 @@ import {
   ActivityFeed,
   RateLimitBadge,
   type FilterOptions
-} from './lib';
+} from '../web/src/lib';
 import { format } from 'date-fns';
 
 /**
